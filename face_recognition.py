@@ -2,7 +2,7 @@
 
 import os
 
-# Limit CPU and memory usage on Render
+# Limit CPU and numerical-library threads
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -26,10 +26,11 @@ REVIEW_T = float(os.getenv("REVIEW_THRESHOLD", 0.35))
 fernet = Fernet(os.environ["FACE_KEY"].encode())
 
 
-# Smaller model to reduce Render memory usage
+# Load only detection and recognition models
 _app = FaceAnalysis(
     name="buffalo_s",
-    allowed_modules=["detection", "recognition", "landmark_2d_106"]
+    allowed_modules=["detection", "recognition"],
+    providers=["CPUExecutionProvider"]
 )
 
 _app.prepare(
@@ -38,6 +39,7 @@ _app.prepare(
 )
 
 
+# Decode camera image
 def decode(b64):
     img = cv2.imdecode(
         np.frombuffer(
@@ -53,22 +55,36 @@ def decode(b64):
     return img
 
 
+# Detect faces
 def detect(img):
     return _app.get(img)
 
 
+# Check face image quality
 def quality(face, img):
-    x1, y1, x2, y2 = [max(0, int(v)) for v in face.bbox]
+    x1, y1, x2, y2 = [
+        max(0, int(v)) for v in face.bbox
+    ]
 
     h, w = img.shape[:2]
+
     x2 = min(x2, w)
     y2 = min(y2, h)
 
     crop = img[y1:y2, x1:x2]
 
     if crop.size:
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        blur = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        gray = cv2.cvtColor(
+            crop,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        blur = float(
+            cv2.Laplacian(
+                gray,
+                cv2.CV_64F
+            ).var()
+        )
     else:
         blur = 0.0
 
@@ -88,14 +104,8 @@ def quality(face, img):
     }
 
 
+# Head movement estimation using facial keypoints
 def pose(face):
-    # Use 3D pose if the model provides it
-    p = getattr(face, "pose", None)
-
-    if p is not None:
-        return tuple(float(v) for v in p)
-
-    # Fallback: estimate movement from facial landmarks
     kps = getattr(face, "kps", None)
 
     if kps is None or len(kps) < 5:
@@ -104,20 +114,25 @@ def pose(face):
     left_eye, right_eye, nose, left_mouth, right_mouth = kps[:5]
 
     eye_center = (left_eye + right_eye) / 2
-    mouth_center = (left_mouth + right_mouth) / 2
-
     eye_distance = np.linalg.norm(right_eye - left_eye)
 
     if eye_distance < 1:
         return None
 
-    yaw = float((nose[0] - eye_center[0]) / eye_distance)
-    pitch = float((nose[1] - eye_center[1]) / eye_distance)
+    mouth_center = (left_mouth + right_mouth) / 2
+
+    yaw = float(
+        (nose[0] - eye_center[0]) / eye_distance
+    )
+
+    pitch = float(
+        (nose[1] - eye_center[1]) / eye_distance
+    )
 
     return pitch, yaw, 0.0
 
 
-# Encrypted embedding storage and matching index
+# Encrypted embedding storage
 _ids = []
 _mat = np.zeros((0, 512), np.float32)
 
@@ -129,20 +144,26 @@ def reload_index():
         "SELECT student_id, face_embedding FROM face_data"
     )
 
-    _ids = [r["student_id"] for r in rows]
+    _ids = [
+        r["student_id"] for r in rows
+    ]
 
     if rows:
-        _mat = np.stack([
+        embeddings = [
             np.frombuffer(
                 fernet.decrypt(bytes(r["face_embedding"])),
-                np.float32
+                dtype=np.float32
             )
             for r in rows
-        ])
+        ]
+
+        _mat = np.stack(embeddings)
+
     else:
         _mat = np.zeros((0, 512), np.float32)
 
 
+# Save student face embeddings
 def save_embeddings(student_id, embs):
     execute(
         "DELETE FROM face_data WHERE student_id=%s",
@@ -173,9 +194,8 @@ def save_embeddings(student_id, embs):
     reload_index()
 
 
+# Match detected face against registered students
 def match(emb):
-    """Return best matching student ID and cosine similarity."""
-
     if not len(_ids):
         return None, 0.0
 
@@ -192,7 +212,9 @@ def match(emb):
 
 
 # Liveness tracking using head movement
-_hist = defaultdict(lambda: deque(maxlen=12))
+_hist = defaultdict(
+    lambda: deque(maxlen=12)
+)
 
 
 def liveness(session_id, student_id, face):
@@ -202,6 +224,7 @@ def liveness(session_id, student_id, face):
         return False
 
     h = _hist[(session_id, student_id)]
+
     h.append(p)
 
     a = np.array(h)
@@ -216,5 +239,8 @@ def liveness(session_id, student_id, face):
 
 
 def clear_liveness(session_id):
-    for k in [k for k in _hist if k[0] == session_id]:
+    for k in [
+        k for k in _hist
+        if k[0] == session_id
+    ]:
         del _hist[k]
