@@ -1,9 +1,11 @@
-flask>=3.0
+Flask
+Flask-Cors
 gunicorn
-mysql-connector-python>=8.4
-numpy<2
+mysql-connector-python
+numpy
 opencv-python-headless
-insightface>=0.7.3
+insightface
 onnxruntime
 cryptography
-werkzeug
+Pillow
+Werkzeug
